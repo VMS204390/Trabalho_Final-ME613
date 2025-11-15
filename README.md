@@ -1,3 +1,5 @@
+canva: https://www.canva.com/design/DAG4yf6FJ30/N_nQcv6ieYX379klgSgtwg/edit?utm_content=DAG4yf6FJ30&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton
+
 Projeto de Regressão Linear – Previsão de Aluguel de Bicicletas
 
 Este projeto tem como objetivo desenvolver e avaliar um modelo de regressão linear para prever o número total de bicicletas alugadas (cnt) com base em variáveis ambientais, temporais e comportamentais associadas ao uso do serviço de aluguel.
