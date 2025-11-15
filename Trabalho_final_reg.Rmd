@@ -16,6 +16,7 @@ library(kableExtra)
 library(GGally)
 library(ggplot2)
 library(ggcorrplot)
+library(psych)
 ```
 
 ## Ler banco de dados e analisar
@@ -52,7 +53,7 @@ ggplot(data = dados, aes(x = atemp, y = cnt)) +
   geom_point(col = "blue", size = 2, alpha = 0.6)
 
 ggplot(data = dados, aes(x = hum, y = cnt)) +
-  geom_point(col = "blue", size = 2, alpha = 0.6)
+  geom_point(col = "blue", size = 2, alpha = 0.6) # <- há obs hum = 0, verificar.
 
 ggplot(data = dados, aes(x = windspeed, y = cnt)) +
   geom_point(col = "blue", size = 2, alpha = 0.6)
@@ -84,3 +85,24 @@ ggplot(data = dados, aes(x = weathersit, y = cnt)) +
   theme_minimal()
 ```
 
+```{r}
+#correlação de dados numéricos
+dadosnum <- subset(dados, select = c(-instant, -dteday, -season, -yr, -mnth, -holiday, 
+                                   -weekday, -workingday, -weathersit))
+dadosnum %>% ggpairs()
+```
+
+Tmep e atemp alta correlação entre si, casual e registered com cnt porque e a soma.
+
+```{r}
+#modelo com tudo
+modelo <- lm(cnt ~ temp + atemp + hum + windspeed + casual + registered + season + yr + 
+               mnth + holiday + weekday + workingday + weathersit, data = dados)
+summary(modelo)
+```
+
+```{r}
+modelo1 <- lm(cnt ~ atemp + hum + windspeed + season + yr + mnth + 
+                holiday + weekday + workingday + weathersit, data = dados)
+summary(modelo1)
+```
