@@ -1,0 +1,86 @@
+---
+title: "Trabalho Final Regressão"
+author: "Vitor Macedo, Luciano Floriano, Gustavo Zanarelli"
+date: "2025-11-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(GGally)
+library(ggplot2)
+library(ggcorrplot)
+```
+
+## Ler banco de dados e analisar
+
+```{r}
+#baixando o banco de dados (alterar para o diretório do PC de vcs)
+dados <- read.csv("C:/Users/vitor/Downloads/archive (1)/AluguelBikes.csv")
+str(dados) #temos season, year, month, holiday, weekday, workingday e weather que devem ser factors
+#vendo se tem linhas com NA e quais são elas
+dados[!complete.cases(dados), ]
+dados <- dados %>% drop_na() #excluindo linhas com NA, são apenas 2
+```
+
+```{r}
+#transformando as colunas do banco de dados em factor e date
+dados$dteday <- as.Date(dados$dteday)
+dados$season <- as.factor(dados$season)
+dados$yr <- as.factor(dados$yr) #poucos anos, melhor usar como fator doq numérico
+dados$mnth <- as.factor(dados$mnth)
+dados$holiday <- as.factor(dados$holiday)
+dados$weekday <- as.factor(dados$weekday)
+dados$workingday <- as.factor(dados$workingday)
+dados$weathersit <- as.factor(dados$weathersit)
+#objetivo -> predizer o número total de bikes (cnt) 
+#[podemos fazer 3 modelos lineares, para casual, registered e a soma]
+str(dados)
+```
+
+```{r}
+ggplot(data = dados, aes(x = temp, y = cnt)) +
+  geom_point(col = "blue", size = 2, alpha = 0.6)
+
+ggplot(data = dados, aes(x = atemp, y = cnt)) +
+  geom_point(col = "blue", size = 2, alpha = 0.6)
+
+ggplot(data = dados, aes(x = hum, y = cnt)) +
+  geom_point(col = "blue", size = 2, alpha = 0.6)
+
+ggplot(data = dados, aes(x = windspeed, y = cnt)) +
+  geom_point(col = "blue", size = 2, alpha = 0.6)
+```
+
+```{r}
+ggplot(data = dados, aes(x = mnth, y = cnt)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(data = dados, aes(x = weekday, y = cnt)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(data = dados, aes(x = season, y = cnt)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(data = dados, aes(x = holiday, y = cnt)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(data = dados, aes(x = workingday, y = cnt)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(data = dados, aes(x = weathersit, y = cnt)) +
+  geom_boxplot() +
+  theme_minimal()
+```
+
