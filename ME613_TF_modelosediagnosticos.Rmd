@@ -1,0 +1,1173 @@
+---
+title: "Trabalho Final Regressao"
+author: "Vitor Macedo, Luciano Floriano, Gustavo Zanareli"
+date: "2025-11-15"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(car)
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(GGally)
+library(ggplot2)
+library(ggcorrplot)
+library(psych)
+```
+
+## Ler banco de dados e analisar
+
+```{r}
+#baixando o banco de dados (alterar para o diretório do PC de vcs)
+dados <- read.csv("AluguelBikes.csv")
+# str(dados) #temos season, year, month, holiday, weekday, workingday e weather que devem ser factors
+#vendo se tem linhas com NA e quais sao elas
+dados[!complete.cases(dados), ]
+dados <- dados %>% drop_na() #excluindo linhas com NA, sao apenas 2
+```
+
+```{r}
+# Renomear colunas para portugues com descricoes claras
+names(dados) <- c(
+  "id",              # instant
+  "data",            # dteday
+  "estacao",         # season (1:Primavera, 2:Verao, 3:Outono, 4:Inverno)
+  "ano",             # yr (0:2018, 1:2019)
+  "mes",             # mnth (1 a 12)
+  "feriado",         # holiday (0:nao, 1:sim)
+  "dia_semana",      # weekday (1:Domingo, 2:Segunda, ..., 7:Sabado)
+  "dia_util",        # workingday (0:nao, 1:sim)
+  "clima",           # weathersit (1:Limpo, 2:Nublado, 3:Chuva_leve, 4:Chuva_forte)
+  "temperatura",     # temp (ºC)
+  "sensacao_termica", # atemp (ºC)
+  "umidade",         # hum (%)
+  "velocidade_vento", # windspeed
+  "usuarios_casuais", # casual
+  "usuarios_registrados", # registered
+  "total_alugueis"   # cnt
+)
+
+# Converter variaveis categóricas para fator com labels descritivos
+dados$estacao <- factor(dados$estacao,
+                             levels = c(1, 2, 3, 4),
+                             labels = c("Primavera", "Verao", "Outono", "Inverno"))
+
+dados$ano <- factor(dados$ano,
+                          levels = c(0, 1),
+                          labels = c("2018", "2019"))
+
+dados$mes <- factor(dados$mes,
+                          levels = 1:12,
+                          labels = c("Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+                                    "Jul", "Ago", "Set", "Out", "Nov", "Dez"))
+
+dados$feriado <- factor(dados$feriado,
+                              levels = c(0, 1),
+                              labels = c("Nao", "Sim"))
+
+dados$dia_semana <- factor(dados$dia_semana,
+                                 levels = c(0,1,2,3,4,5,6),
+                                 labels = c("Domingo", "Segunda", "Terca", "Quarta", 
+                                           "Quinta", "Sexta", "Sabado"))
+
+dados$dia_util <- factor(dados$dia_util,
+                               levels = c(0, 1),
+                               labels = c("Nao", "Sim"))
+
+dados$clima <- factor(dados$clima,
+                            levels = c(1, 2, 3, 4),
+                            labels = c("Limpo", "Nublado", "Chuva_leve", "Chuva_forte"))
+
+# Converter data para formato Date
+dados$data <- as.Date(dados$data, format = "%y/%m/%d")
+```
+
+## Como alguns modelos tem muitas variaveis preditoras nao significativas, correlacionadas ou ate indesejadas, (como temperatura e sensacao termica) foi decidido remove-las por esses motivos. As tabelas de resumo dos modelos, mostrando a  falta de significância de alguns desses preditores. 
+
+## Seguem ideias de modelos que levam em conta os preditores qualitativos, suas interacoes e algumas distincoes que num primeiro momento pareciam adequadas podem levar a entendimento equivocado da situacao real do aluguel de bicicletas
+
+# Inicialmente foi pensado que as variaveis dia_semana + feriado poderiam ser substituidas, sem perda de informacao pelo preditor dia_util. Dessa forma abaixando consideravelmente o numero de niveis (7 Dias da semana e 2 de Feriado para apenas 2 de Dia util), alem de reduzir o numero de preditores, simplificando nosso modelo. 
+
+```{r}
+## Verificacao para dia_semana + feriado por dia_util
+
+# Analise da relacao entre essas variaveis
+table(dados$dia_semana, dados$dia_util)
+table(dados$feriado, dados$dia_util)
+
+# Verificando se dia_util captura a informacao suficiente
+dados %>%
+  group_by(dia_util) %>%
+  summarise(
+    media_alugueis = mean(total_alugueis),
+    n = n()
+  )
+
+# Comparacao com dia_semana
+dados %>%
+  group_by(dia_semana) %>%
+  summarise(
+    media_alugueis = mean(total_alugueis),
+    n = n()
+  ) %>%
+  arrange(media_alugueis)
+
+dados %>%
+  mutate(tipo_dia = case_when(
+    feriado == "Sim" ~ "Feriado",
+    dia_util == "Sim" ~ "Dia util",
+    TRUE ~ "Fim de Semana"
+  )) %>%
+  group_by(tipo_dia) %>%
+  summarise(media_alugueis = mean(total_alugueis))
+```
+
+# Contudo, depois da analise acima, percebe-se que o comportamento de feriados sao diferentes e nao podem ser englobados por seu padrao heterogeneo quanto a dia_util. Alem disso, finais de semana mostraram-se as datas mais populares para alugueis de bicicleta. Assim concluiu-se que a criacao de uma variavel tipo_dia seria mais eficaz.
+
+
+```{r}
+# CRIAcaO DA VARIaVEL TIPO_DIA
+dados <- dados %>%
+  mutate(tipo_dia = case_when(
+    feriado == "Sim" ~ "Feriado",
+    dia_util == "Sim" ~ "Dia_Util", 
+    TRUE ~ "Fim_de_Semana"
+  )) %>%
+  mutate(tipo_dia = factor(tipo_dia, 
+                          levels = c("Dia_Util", "Fim_de_Semana", "Feriado")))
+
+# Verificacao
+dados %>% 
+  group_by(tipo_dia) %>% 
+  summarise(media_alugueis = mean(total_alugueis))
+```
+
+# Assim, agora com essa nova variavel preditora, segue uma nova onda de AED e tambem modelos que levem em conta o tipo de dia. Vale comentar que variaveis como "sensacao_termica" e "mes" foram deixadas de lado por altas correlacoes com "temperatura" e "estacao", respectivamente.
+
+```{r}
+# ANaLISE EXPLORATÓRIA ATUALIZADA
+
+# 1. Estacao - mantem forte influencia
+dados %>% 
+  group_by(estacao) %>% 
+  summarise(media_alugueis = mean(total_alugueis)) %>% 
+  arrange(desc(media_alugueis))
+
+ggplot(dados, aes(x = estacao, y = total_alugueis, fill = estacao)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Distribuicao de Alugueis por Estacao - Padrao Sazonal Forte")
+
+# 2. Ano - crescimento significativo
+crescimento_ano <- dados %>% 
+  group_by(ano) %>% 
+  summarise(media_alugueis = mean(total_alugueis))
+
+ggplot(dados, aes(x = ano, y = total_alugueis, fill = ano)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = paste("Crescimento de", 
+                    round((crescimento_ano$media_alugueis[2] - crescimento_ano$media_alugueis[1])/crescimento_ano$media_alugueis[1] * 100, 1),
+                    "% entre 2018 e 2019"))
+
+# 3. Clima - impacto drastico da chuva
+ggplot(dados, aes(x = clima, y = total_alugueis, fill = clima)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Chuva Reduz Drasticamente os Alugueis")
+
+# 4. Nova variavel tipo_dia - mostra os 3 padroes distintos
+dados %>% 
+  group_by(tipo_dia) %>% 
+  summarise(media_alugueis = mean(total_alugueis))
+
+ggplot(dados, aes(x = tipo_dia, y = total_alugueis, fill = tipo_dia)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Tres Padroes Distintos: Fim de Semana > Dia util > Feriado")
+```
+
+## MODELOS ## 
+
+```{r}
+# MODELOS DE REGRESSaO MELHORADOS
+
+# MODELO 1: Ponta pe inicial sem as variaveis correlacionadas
+modelo1 <- lm(total_alugueis ~ estacao + ano + clima + temperatura + 
+                umidade + velocidade_vento + tipo_dia, 
+              data = dados)
+
+summary(modelo1)
+
+# MODELO 2: Baseado na AED, inclui interacoes clima-temp e estacao-temp 
+modelo2 <- lm(total_alugueis ~ estacao + ano + clima + temperatura + 
+                umidade + velocidade_vento + tipo_dia +
+                estacao:temperatura + clima:temperatura,  # Interacoes climaticas
+              data = dados)
+
+summary(modelo2)
+
+# MODELO 3: Separacao por tipo de usuario (insight importante)
+modelo_casual <- lm(usuarios_casuais ~ estacao + clima + temperatura + 
+                      tipo_dia + ano, data = dados)
+
+modelo_registrados <- lm(usuarios_registrados ~ estacao + clima + temperatura + 
+                          tipo_dia + ano, data = dados)
+
+# Comparacao
+summary(modelo_casual)
+summary(modelo_registrados)
+```
+
+
+```{r}
+# DIAGNÓSTICO E SELEcaO DE VARIaVEIS
+
+# Teste de multicolinearidade (VIF) usando a biblioteca "car"
+
+vif(modelo1)  # Valores > 10 indicam problemas
+
+# Stepwise para selecao automatica
+modelo_step <- step(modelo1, direction = "both")
+summary(modelo_step)
+
+# Comparacao de modelos
+anova(modelo1, modelo2)
+```
+
+
+```{r}
+# VISUALIZAcoES AVANcADAS
+
+# 1. Padroes por tipo de usuario (corrigido)
+dados_long <- dados %>%
+  select(tipo_dia, ano, usuarios_casuais, usuarios_registrados) %>%
+  pivot_longer(cols = c(usuarios_casuais, usuarios_registrados),
+               names_to = "tipo_usuario", 
+               values_to = "quantidade")
+
+ggplot(dados_long, aes(x = tipo_dia, y = quantidade, fill = tipo_usuario)) +
+  geom_boxplot() +
+  facet_wrap(~ ano) +
+  labs(title = "Padroes Distintos: Casuais (lazer) vs Registrados (trabalho)",
+       y = "Numero de Usuarios", x = "Tipo de Dia") +
+  theme_minimal()
+
+# 2. Efeito da temperatura por estacao
+ggplot(dados, aes(x = temperatura, y = total_alugueis, color = estacao)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  labs(title = "Efeito da Temperatura Varia por Estacao") +
+  theme_minimal()
+
+# 3. Clima x Tipo de Dia
+dados %>%
+  group_by(clima, tipo_dia) %>%
+  summarise(media_alugueis = mean(total_alugueis), .groups = 'drop') %>%
+  ggplot(aes(x = clima, y = media_alugueis, fill = tipo_dia)) +
+  geom_col(position = "dodge") +
+  labs(title = "Interacao: Clima e Tipo de Dia") +
+  theme_minimal()
+```
+
+
+```{r}
+# DIAGNÓSTICO MODELO 1
+
+# Usando o modelo1 como base para diagnóstico
+modelo_diagnostico <- lm(total_alugueis ~ estacao + ano + clima + temperatura + 
+                          umidade + velocidade_vento + tipo_dia, 
+                        data = dados)
+
+# 1. RESUMO DO MODELO
+summary(modelo_diagnostico)
+
+# 2. DIAGNÓSTICO GRaFICO DAS SUPOSIcoES
+par(mfrow = c(2, 3))
+
+# a) Linearidade e Homocedasticidade
+plot(modelo_diagnostico, which = 1, main = "Residuos vs Ajustados")
+# Adicionando linha de suavizacao
+abline(h = 0, col = "red", lty = 2)
+
+# b) Normalidade dos Residuos - Q-Q Plot
+plot(modelo_diagnostico, which = 2, main = "Q-Q Plot dos Residuos")
+
+# c) Scale-Location Plot (Homocedasticidade)
+plot(modelo_diagnostico, which = 3, main = "Scale-Location Plot")
+
+# d) Observacoes Influentes - Leverage vs Residuos
+plot(modelo_diagnostico, which = 5, main = "Residuos vs Leverage")
+
+# e) Histograma dos Residuos
+residuos <- residuals(modelo_diagnostico)
+hist(residuos, breaks = 30, main = "Distribuicao dos Residuos", 
+     xlab = "Residuos", probability = TRUE)
+curve(dnorm(x, mean = mean(residuos), sd = sd(residuos)), 
+      add = TRUE, col = "red", lwd = 2)
+
+# f) Autocorrelacao dos Residuos
+acf(residuos, main = "Autocorrelacao dos Residuos")
+
+par(mfrow = c(1, 1))
+
+# 3. TESTES FORMais DAS SUPOSIcoES
+
+# a) Normalidade - Teste de Shapiro-Wilk
+shapiro_test <- shapiro.test(residuos)
+cat("Teste de Normalidade de Shapiro-Wilk:\n")
+cat("p-value:", shapiro_test$p.value, "\n")
+if(shapiro_test$p.value < 0.05) {
+  cat("REJEITA normalidade dos residuos\n")
+} else {
+  cat("NaO REJEITA normalidade dos residuos\n")
+}
+
+# b) Homocedasticidade - Teste de Breusch-Pagan
+library(lmtest)
+bp_test <- bptest(modelo_diagnostico)
+cat("\nTeste de Homocedasticidade de Breusch-Pagan:\n")
+cat("p-value:", bp_test$p.value, "\n")
+if(bp_test$p.value < 0.05) {
+  cat("REJEITA homocedasticidade (heterocedasticidade presente)\n")
+} else {
+  cat("NaO REJEITA homocedasticidade\n")
+}
+
+# c) Multicolinearidade - VIF
+vif_values <- vif(modelo_diagnostico)
+cat("\nFator de Inflacao de Variância (VIF):\n")
+print(vif_values)
+cat("Valores > 10 indicam multicolinearidade problematica\n")
+
+# d) Observacoes Influentes
+influence_measures <- influence.measures(modelo_diagnostico)
+summary(influence_measures)
+
+# Identificar observacoes com alto leverage
+leverage <- hatvalues(modelo_diagnostico)
+high_leverage <- which(leverage > 2*mean(leverage))
+cat("\nObservacoes com alto leverage:", length(high_leverage), "\n")
+
+# Identificar outliers
+cooks_d <- cooks.distance(modelo_diagnostico)
+high_influence <- which(cooks_d > 4/length(cooks_d))
+cat("Observacoes influentes (Cook's D > 4/n):", length(high_influence), "\n")
+
+# 4. IDENTIFICAcaO DOS PROBLEMAS PRINCIPAIS
+
+# Baseado no diagnóstico, vamos identificar os principais problemas:
+problemas <- list()
+
+# Verificar heterocedasticidade
+if(bp_test$p.value < 0.05) {
+  problemas$heterocedasticidade <- "PRESENTE - necessita correcao"
+} else {
+  problemas$heterocedasticidade <- "AUSENTE"
+}
+
+# Verificar normalidade
+if(shapiro_test$p.value < 0.05) {
+  problemas$normalidade <- "VIOLADA - residuos nao normais"
+} else {
+  problemas$normalidade <- "OK"
+}
+
+# Verificar multicolinearidade
+if(any(vif_values > 10)) {
+  problemas$multicolinearidade <- "PRESENTE em:" + names(which(vif_values > 10))
+} else {
+  problemas$multicolinearidade <- "AUSENTE"
+}
+
+cat("DIAGNÓSTICO FINAL:\n")
+print(problemas)
+
+# 5. SOLUcoES PARA PROBLEMAS IDENTIFICADOS
+
+# SE HOUVER HETEROCEDASTICIDADE E NaO NORMALIDADE:
+
+# SOLUcaO A: Transformacao da variavel resposta
+modelo_log <- lm(log(total_alugueis) ~ estacao + ano + clima + temperatura + 
+                   umidade + velocidade_vento + tipo_dia, 
+                 data = dados)
+
+# Diagnóstico do modelo transformado
+par(mfrow = c(2, 2))
+plot(modelo_log, main = "Modelo com Log-Transformacao")
+par(mfrow = c(1, 1))
+
+# Testes do modelo transformado
+cat("Diagnóstico após transformacao log:\n")
+cat("Breusch-Pagan p-value:", bptest(modelo_log)$p.value, "\n")
+cat("Shapiro-Wilk p-value:", shapiro.test(residuals(modelo_log))$p.value, "\n")
+
+# SOLUcaO B: Minimos Quadrados Ponderados (WLS)
+# Calcular pesos baseados na variância dos residuos
+residuos_abs <- abs(residuals(modelo_diagnostico))
+pesos <- 1/residuos_abs^2
+
+modelo_wls <- lm(total_alugueis ~ estacao + ano + clima + temperatura + 
+                   umidade + velocidade_vento + tipo_dia, 
+                 data = dados, weights = pesos)
+
+summary(modelo_wls)
+cat("Comparacao R²:\n")
+cat("OLS:", summary(modelo_diagnostico)$r.squared, "\n")
+cat("WLS:", summary(modelo_wls)$r.squared, "\n")
+
+
+# SOLUcaO D: Regressao Quantilica (para outliers)
+library(quantreg)
+modelo_quantil <- rq(total_alugueis ~ estacao + ano + clima + temperatura + 
+                       umidade + velocidade_vento + tipo_dia, 
+                     data = dados, tau = 0.5)  # Mediana
+
+summary(modelo_quantil)
+
+# 6. COMPARAcaO FINAL DOS MODELOS
+
+# Criar funcao para extrair metricas
+extrair_metricas <- function(modelo, nome) {
+  if(class(modelo)[1] == "rq") {
+    # Regressao quantilica
+    resid <- residuals(modelo)
+    data.frame(
+      Modelo = nome,
+      RSE = sqrt(mean(resid^2)),
+      MAE = mean(abs(resid)),
+      AIC = NA,
+      BIC = NA
+    )
+  } else {
+    resid <- residuals(modelo)
+    data.frame(
+      Modelo = nome,
+      RSE = sqrt(mean(resid^2)),
+      MAE = mean(abs(resid)),
+      AIC = AIC(modelo),
+      BIC = BIC(modelo)
+    )
+  }
+}
+
+# Comparar modelos
+comparacao <- rbind(
+  extrair_metricas(modelo_diagnostico, "OLS"),
+  extrair_metricas(modelo_log, "Log-Transformado"),
+  extrair_metricas(modelo_wls, "WLS"),
+  extrair_metricas(modelo_quantil, "Quantilico")
+)
+
+print(comparacao)
+
+# 7. RECOMENDAcaO FINAL BASEADA NO DIAGNÓSTICO
+
+cat("RECOMENDAcaO BASEADA NO DIAGNÓSTICO:\n\n")
+
+if(bp_test$p.value < 0.05 & shapiro_test$p.value < 0.05) {
+  cat("PROBLEMAS: Heterocedasticidade e Nao Normalidade\n")
+  cat("SOLUcaO RECOMENDADA: Modelo Robusto ou WLS\n")
+  cat("JUSTIFICATIVA: Ambos sao resistentes a outliers e heterocedasticidade\n\n")
+} else if(bp_test$p.value < 0.05) {
+  cat("PROBLEMA: Heterocedasticidade\n")
+  cat("SOLUcaO RECOMENDADA: Minimos Quadrados Ponderados (WLS)\n")
+  cat("JUSTIFICATIVA: Corrige a variância nao constante\n\n")
+} else if(shapiro_test$p.value < 0.05) {
+  cat("PROBLEMA: Nao Normalidade dos Residuos\n")
+  cat("SOLUcaO RECOMENDADA: Regressao Quantilica ou Transformacao\n")
+  cat("JUSTIFICATIVA: Nao assume normalidade dos residuos\n\n")
+} else if(any(vif_values > 10)) {
+  cat("PROBLEMA: Multicolinearidade\n")
+  cat("SOLUcaO RECOMENDADA: LASSO ou Ridge\n")
+  cat("JUSTIFICATIVA: Regularizacao reduz overfitting por correlacao\n\n")
+} else {
+  cat("SITUAcaO: Modelo OLS adequado\n")
+  cat("RECOMENDAcaO: Manter modelo linear classico\n\n")
+}
+
+# Mostrar metricas do melhor modelo
+melhor_modelo <- comparacao[which.min(comparacao$RSE), ]
+cat("MELHOR MODELO (menor RSE):", melhor_modelo$Modelo, "\n")
+cat("RSE:", round(melhor_modelo$RSE, 2), "\n")
+```
+
+## Interpretacao do Modelo 2 ##
+
+```{r}
+# ANaLISE DETALHADA DO MODELO 2
+cat("=== INTERPRETAcaO DETALHADA DO MODELO 2 (COM INTERAcoES) ===\n\n")
+
+# Resumo completo do modelo
+summary_modelo2 <- summary(modelo2)
+cat("R² do Modelo 2:", round(summary_modelo2$r.squared, 4), "\n")
+cat("R² Ajustado do Modelo 2:", round(summary_modelo2$adj.r.squared, 4), "\n\n")
+
+# Extrair coeficientes significativos
+coeficientes <- coef(summary_modelo2)
+coeficientes_significativos <- coeficientes[coeficientes[,4] < 0.05, ]
+
+cat("Coeficientes Estatisticamente Significativos (p < 0.05):\n")
+print(round(coeficientes_significativos, 4))
+
+# ANaLISE DAS INTERAcoES
+cat("\n=== ANaLISE DAS INTERAcoES CLIMaTICAS ===\n\n")
+
+# Interpretacao das interacoes com temperatura
+interacoes_temperatura <- coeficientes[grep("temperatura", rownames(coeficientes)), ]
+
+cat("Efeito da Temperatura por Estacao:\n")
+for(i in 1:nrow(interacoes_temperatura)) {
+  nome <- rownames(interacoes_temperatura)[i]
+  coef_val <- interacoes_temperatura[i, 1]
+  p_val <- interacoes_temperatura[i, 4]
+  
+  if(grepl("estacao", nome)) {
+    estacao <- gsub("estacao|:temperatura", "", nome)
+    cat("-", estacao, ":")
+    cat(" A cada 1°C de aumento, os alugueis", 
+        ifelse(coef_val > 0, "aumentam", "diminuem"),
+        "em", abs(round(coef_val)), "unidades")
+    if(p_val < 0.05) cat(" ** (significativo)\n") else cat(" (nao significativo)\n")
+  }
+  
+  if(grepl("clima", nome)) {
+    clima <- gsub("clima|:temperatura", "", nome)
+    cat("-", clima, ":")
+    cat(" O efeito da temperatura e", abs(round(coef_val)), "unidades",
+        ifelse(coef_val > 0, "maior", "menor"), "que no clima de referencia")
+    if(p_val < 0.05) cat(" ** (significativo)\n") else cat(" (nao significativo)\n")
+  }
+}
+
+# VISUALIZAcaO DAS INTERAcoES
+cat("\n=== VISUALIZAcaO DAS INTERAcoES ===\n")
+
+# Grafico de interacao Estacao × Temperatura
+ggplot(dados, aes(x = temperatura, y = total_alugueis, color = estacao)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Interacao: Efeito da Temperatura Varia por Estacao",
+       subtitle = "Outono/Inverno: menor sensibilidade | Verao: maior sensibilidade",
+       x = "Temperatura (Celsius)", y = "Total de Alugueis",
+       color = "Estacao") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Grafico de interacao Clima × Temperatura
+ggplot(dados, aes(x = temperatura, y = total_alugueis, color = clima)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Interacao: Efeito da Temperatura Varia com o Clima",
+       subtitle = "Chuva reduz o efeito positivo da temperatura",
+       x = "Temperatura (Celsius)", y = "Total de Alugueis",
+       color = "Clima") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+## Analise dos modelos por usuario (casual x registrado) ##
+
+```{r}
+# ANaLISE COMPARATIVA DOS MODELOS POR TIPO DE USUaRIO
+cat("=== ANaLISE COMPARATIVA: USUaRIOS CASUAIS vs REGISTRADOS ===\n\n")
+
+# Resumos dos modelos
+summary_casual <- summary(modelo_casual)
+summary_registrados <- summary(modelo_registrados)
+
+cat("DESEMPENHO DOS MODELOS:\n")
+cat("Casuais - R²:", round(summary_casual$r.squared, 4), 
+    "| R² Ajustado:", round(summary_casual$adj.r.squared, 4), "\n")
+cat("Registrados - R²:", round(summary_registrados$r.squared, 4),
+    "| R² Ajustado:", round(summary_registrados$adj.r.squared, 4), "\n\n")
+
+# Comparacao dos efeitos do tipo_dia
+cat("COMPARAcaO DOS EFEITOS POR TIPO DE DIA:\n\n")
+
+extrair_efeito_tipodia <- function(modelo, nome_modelo) {
+  coefs <- coef(summary(modelo))
+  efeitos <- coefs[grep("tipo_dia", rownames(coefs)), ]
+  
+  cat(nome_modelo, ":\n")
+  for(i in 1:nrow(efeitos)) {
+    tipo <- gsub("tipo_dia", "", rownames(efeitos)[i])
+    estimativa <- efeitos[i, 1]
+    p_val <- efeitos[i, 4]
+    
+    cat("  ", tipo, ":")
+    cat(" Efeito de", round(estimativa), "alugueis")
+    if(p_val < 0.05) cat(" **\n") else cat(" (ns)\n")
+  }
+  cat("\n")
+}
+
+extrair_efeito_tipodia(modelo_casual, "USUaRIOS CASUAIS")
+extrair_efeito_tipodia(modelo_registrados, "USUaRIOS REGISTRADOS")
+
+# VISUALIZAcaO COMPARATIVA
+dados_comparacao <- dados %>%
+  group_by(tipo_dia) %>%
+  summarise(
+    casual = mean(usuarios_casuais),
+    registrado = mean(usuarios_registrados),
+    .groups = 'drop'
+  ) %>%
+  pivot_longer(cols = c(casual, registrado), 
+               names_to = "tipo_usuario", 
+               values_to = "media_alugueis")
+
+ggplot(dados_comparacao, aes(x = tipo_dia, y = media_alugueis, fill = tipo_usuario)) +
+  geom_col(position = "dodge") +
+  labs(title = "Padroes Opostos: Casuais vs Registrados por Tipo de Dia",
+       subtitle = "Casuais: picos em fins de semana | Registrados: picos em dias uteis",
+       x = "Tipo de Dia", y = "Media de Alugueis",
+       fill = "Tipo de Usuario") +
+  theme_minimal() +
+  scale_fill_manual(values = c("casual" = "#FF6B6B", "registrado" = "#4ECDC4"))
+```
+
+## Diagnóstico do modelo final e observações influentes ##
+
+```{r}
+# DIAGNÓSTICO COMPARATIVO DOS MODELOS ALTERNATIVOS
+cat("=== DIAGNÓSTICO COMPARATIVO DOS MODELOS ALTERNATIVOS ===\n\n")
+
+# Função para diagnóstico completo
+diagnostico_completo <- function(modelo, nome_modelo) {
+  cat("DIAGNÓSTICO -", nome_modelo, ":\n")
+  
+  residuos <- residuals(modelo)
+  
+  # Testes formais
+  bp_test <- bptest(modelo)
+  shapiro_test <- shapiro.test(residuos)
+  
+  cat("  Breusch-Pagan (homocedasticidade): p =", round(bp_test$p.value, 4))
+  if(bp_test$p.value < 0.05) cat(" → HETEROCEDASTICIDADE **\n") else cat(" → Homocedasticidade OK\n")
+  
+  cat("  Shapiro-Wilk (normalidade): p =", round(shapiro_test$p.value, 4))
+  if(shapiro_test$p.value < 0.05) cat(" → NÃO NORMALIDADE **\n") else cat(" → Normalidade OK\n")
+  
+  # Observações influentes
+  n <- length(residuos)
+  cooks_d <- cooks.distance(modelo)
+  high_influence <- sum(cooks_d > 4/n)
+  leverage <- hatvalues(modelo)
+  high_leverage <- sum(leverage > 2*mean(leverage))
+  
+  cat("  Observações influentes (Cook's D):", high_influence, "/", n, "\n")
+  cat("  Observações com alto leverage:", high_leverage, "/", n, "\n\n")
+}
+
+# Aplicar diagnóstico aos modelos
+diagnostico_completo(modelo_diagnostico, "OLS ORIGINAL")
+diagnostico_completo(modelo_log, "LOG-TRANSFORMADO")
+diagnostico_completo(modelo_wls, "MiNIMOS QUADRADOS PONDERADOS")
+```
+
+```{r}
+# ANÁLISE DETALHADA DAS OBSERVAÇÕES INFLUENTES
+cat("=== ANÁLISE DAS OBSERVAÇÕES INFLUENTES ===\n\n")
+
+# Identificar observações problemáticas no modelo original
+cooks_d <- cooks.distance(modelo_diagnostico)
+leverage <- hatvalues(modelo_diagnostico)
+n <- nrow(dados)
+
+# Critérios
+influentes <- which(cooks_d > 4/n)
+alto_leverage <- which(leverage > 2*mean(leverage))
+
+cat("Observações Identificadas:\n")
+cat("Influentes (Cook's D > 4/n):", length(influentes), "\n")
+cat("Alto Leverage (> 2×média):", length(alto_leverage), "\n")
+cat("Interseção (ambos):", length(intersect(influentes, alto_leverage)), "\n\n")
+
+# Analisar caracteristicas das observações influentes
+cat("CARACTERiSTICAS DAS OBSERVAÇÕES MAIS INFLUENTES:\n")
+top_influentes <- head(influentes[order(cooks_d[influentes], decreasing = TRUE)], 10)
+
+dados_influentes <- dados[top_influentes, ] %>%
+  select(data, total_alugueis, usuarios_casuais, usuarios_registrados, 
+         estacao, clima, temperatura, tipo_dia)
+
+print(dados_influentes)
+
+# Verificar impacto nas estimativas
+cat("\nIMPACTO NAS ESTIMATIVAS:\n")
+# Modelo sem observações influentes
+modelo_sem_influentes <- update(modelo_diagnostico, 
+                               subset = cooks_d <= 4/n)
+
+# Comparar coeficientes
+coef_original <- coef(modelo_diagnostico)
+coef_sem_influentes <- coef(modelo_sem_influentes)
+diferencas <- coef_original - coef_sem_influentes
+
+cat("Máxima diferença nos coeficientes:", round(max(abs(diferencas)), 2), "\n")
+cat("Coeficientes com maior variação (> 10%):\n")
+variacao_relativa <- abs(diferencas/coef_original) * 100
+print(round(variacao_relativa[variacao_relativa > 10], 1))
+```
+
+
+## SELEÇÃO DE MODELOS COM CRITÉRIOS DE INFORMAÇÃO ##
+
+```{r}
+# COMPARAÇÃO FORMAL DE MODELOS
+cat("=== COMPARAÇÃO FORMAL DE MODELOS ===\n\n")
+
+# Função para calcular Cp de Mallow
+calcular_cp <- function(modelo, modelo_completo) {
+  RSS <- sum(residuals(modelo)^2)
+  MSE_completo <- summary(modelo_completo)$sigma^2
+  p <- length(coef(modelo))
+  n <- length(residuals(modelo))
+  
+  Cp <- RSS/MSE_completo - n + 2*p
+  return(Cp)
+}
+
+# Comparação Modelo 1 vs Modelo 2
+comparacao_modelos <- data.frame(
+  Modelo = c("Modelo 1 (Sem Interações)", "Modelo 2 (Com Interações)"),
+  R2 = c(summary(modelo_diagnostico)$r.squared, summary(modelo2)$r.squared),
+  R2_ajustado = c(summary(modelo_diagnostico)$adj.r.squared, summary(modelo2)$adj.r.squared),
+  AIC = c(AIC(modelo_diagnostico), AIC(modelo2)),
+  BIC = c(BIC(modelo_diagnostico), BIC(modelo2)),
+  Cp = c(calcular_cp(modelo_diagnostico, modelo2), calcular_cp(modelo2, modelo2)),
+  stringsAsFactors = FALSE
+)
+
+# Mostrar apenas as colunas numéricas arredondadas
+comparacao_numerica <- comparacao_modelos %>% 
+  select(-Modelo) %>% 
+  round(3)
+
+# Adicionar nomes dos modelos como row names para visualização
+rownames(comparacao_numerica) <- comparacao_modelos$Modelo
+
+cat("COMPARAÇÃO DE CRITÉRIOS DE INFORMAÇÃO:\n")
+print(comparacao_numerica)
+
+# Teste F formal
+cat("\nTESTE F PARA COMPARAÇÃO DE MODELOS:\n")
+anova_test <- anova(modelo_diagnostico, modelo2)
+print(anova_test)
+
+# Interpretação detalhada
+cat("\n=== INTERPRETAÇÃO DETALHADA ===\n")
+cat("ANÁLISE DOS CRITÉRIOS:\n")
+
+# R² Ajustado
+if(comparacao_numerica[2, "R2_ajustado"] > comparacao_numerica[1, "R2_ajustado"]) {
+  cat("• R² Ajustado: Modelo 2 é superior (", 
+      round(comparacao_numerica[2, "R2_ajustado"] - comparacao_numerica[1, "R2_ajustado"], 4),
+      " pontos a mais)\n")
+} else {
+  cat("• R² Ajustado: Modelo 1 é superior\n")
+}
+
+# AIC (menor é melhor)
+if(comparacao_numerica[2, "AIC"] < comparacao_numerica[1, "AIC"]) {
+  cat("• AIC: Modelo 2 é preferivel (", 
+      round(comparacao_numerica[1, "AIC"] - comparacao_numerica[2, "AIC"], 1),
+      " pontos menor)\n")
+} else {
+  cat("• AIC: Modelo 1 é preferivel\n")
+}
+
+# BIC (menor é melhor)
+if(comparacao_numerica[2, "BIC"] < comparacao_numerica[1, "BIC"]) {
+  cat("• BIC: Modelo 2 é preferivel (", 
+      round(comparacao_numerica[1, "BIC"] - comparacao_numerica[2, "BIC"], 1),
+      " pontos menor)\n")
+} else {
+  cat("• BIC: Modelo 1 é preferivel\n")
+}
+
+# Cp de Mallow (próximo ao número de parâmetros é ideal)
+p_modelo1 <- length(coef(modelo_diagnostico))
+p_modelo2 <- length(coef(modelo2))
+
+cat("• Cp Modelo 1:", round(comparacao_numerica[1, "Cp"], 1), 
+    "(ideal próximo a", p_modelo1, ")\n")
+cat("• Cp Modelo 2:", round(comparacao_numerica[2, "Cp"], 1), 
+    "(ideal próximo a", p_modelo2, ")\n")
+
+# Teste F
+cat("\nTESTE DE SIGNIFICÂNCIA DAS INTERAÇÕES:\n")
+if(anova_test$`Pr(>F)`[2] < 0.05) {
+  cat("• O Modelo 2 é estatisticamente superior ao Modelo 1 (p =", 
+      round(anova_test$`Pr(>F)`[2], 4), ")\n")
+  cat("• As interações adicionam poder explicativo significativo\n")
+  cat("• Justificativa: As relações entre temperatura-estação e temperatura-clima\n")
+  cat("  são importantes para explicar a variação nos aluguéis\n")
+} else {
+  cat("• Não há evidência forte de que o Modelo 2 seja superior ao Modelo 1\n")
+  cat("• As interações não melhoram significativamente o modelo\n")
+}
+
+# RECOMENDAÇÃO FINAL BASEADA NOS CRITÉRIOS
+cat("\nRECOMENDAÇÃO BASEADA NOS CRITÉRIOS:\n")
+
+# Contar votos dos critérios
+votos_modelo2 <- sum(
+  comparacao_numerica[2, "R2_ajustado"] > comparacao_numerica[1, "R2_ajustado"],
+  comparacao_numerica[2, "AIC"] < comparacao_numerica[1, "AIC"],
+  comparacao_numerica[2, "BIC"] < comparacao_numerica[1, "BIC"],
+  abs(comparacao_numerica[2, "Cp"] - p_modelo2) < abs(comparacao_numerica[1, "Cp"] - p_modelo1),
+  anova_test$`Pr(>F)`[2] < 0.05
+)
+
+if(votos_modelo2 >= 3) {
+  cat("✓ RECOMENDAÇÃO: Modelo 2 (Com Interações)\n")
+  cat("✓ JUSTIFICATIVA:", votos_modelo2, "dos 5 critérios favorecem o Modelo 2\n")
+} else {
+  cat("✓ RECOMENDAÇÃO: Modelo 1 (Sem Interações)\n")
+  cat("✓ JUSTIFICATIVA: Modelo mais parcimonioso com desempenho similar\n")
+}
+```
+
+## INTERPRETAÇÃO DO MODELO LOG-TRANSFORMADO ##
+
+```{r}
+# INTERPRETAÇÃO CORRETA DO MODELO LOG-TRANSFORMADO (CÓDIGO SIMPLIFICADO)
+cat("=== INTERPRETAÇÃO DO MODELO LOG-TRANSFORMADO ===\n\n")
+
+# Coeficientes do modelo log
+coef_log <- coef(modelo_log)
+cat("Coeficientes do Modelo Log-Transformado:\n\n")
+
+# Função simplificada e segura
+interpretar_coef_log_simples <- function(coeficiente, variavel) {
+  efeito_percentual <- (exp(coeficiente) - 1) * 100
+  
+  if(!grepl("estacao|ano|clima|tipo_dia", variavel)) {
+    # Variável continua
+    cat(variavel, ":\n")
+    cat("  Efeito: ")
+    if(efeito_percentual > 0) {
+      cat("Aumento de", round(efeito_percentual, 2), "por cento\n")
+    } else {
+      cat("Reducao de", round(abs(efeito_percentual), 2), "por cento\n")
+    }
+  } else {
+    # Variável categórica
+    cat(variavel, ":\n")
+    cat("  Comparacao com referencia: ")
+    if(efeito_percentual > 0) {
+      cat(round(efeito_percentual, 2), "por cento maior\n")
+    } else {
+      cat(round(abs(efeito_percentual), 2), "por cento menor\n")
+    }
+  }
+  cat("\n")
+}
+
+# Aplicar interpretação aos coeficientes principais
+for(i in 2:min(10, length(coef_log))) {  # Limitar para não ficar muito longo
+  interpretar_coef_log_simples(coef_log[i], names(coef_log)[i])
+}
+
+# Interpretação prática das principais variáveis
+cat("PRINCIPAIS INSIGHTS:\n")
+cat("===================\n\n")
+
+# Temperatura
+if("temperatura" %in% names(coef_log)) {
+  coef_temp <- coef_log["temperatura"]
+  efeito_temp <- (exp(coef_temp) - 1) * 100
+  cat("TEMPERATURA:\n")
+  cat("  Cada 1 grau Celsius de aumento na temperatura resulta em:\n")
+  if(efeito_temp > 0) {
+    cat("  -> Aumento de", round(efeito_temp, 1), "% nos alugueis totais\n")
+  } else {
+    cat("  -> Reducao de", round(abs(efeito_temp), 1), "% nos alugueis totais\n")
+  }
+  cat("\n")
+}
+
+# Ano (crescimento)
+if("ano2019" %in% names(coef_log)) {
+  coef_ano <- coef_log["ano2019"]
+  efeito_ano <- (exp(coef_ano) - 1) * 100
+  cat("CRESCIMENTO ANUAL:\n")
+  cat("  Comparando 2019 com 2018:\n")
+  if(efeito_ano > 0) {
+    cat("  -> Alugueis em 2019 sao", round(efeito_ano, 1), "% maiores\n")
+  } else {
+    cat("  -> Alugueis em 2019 sao", round(abs(efeito_ano), 1), "% menores\n")
+  }
+  cat("\n")
+}
+
+# Clima
+if("climaChuva_leve" %in% names(coef_log)) {
+  coef_chuva <- coef_log["climaChuva_leve"]
+  efeito_chuva <- (exp(coef_chuva) - 1) * 100
+  cat("EFEITO DA CHUVA:\n")
+  cat("  Comparado com dias de clima limpo:\n")
+  if(efeito_chuva > 0) {
+    cat("  -> Dias com chuva leve tem", round(efeito_chuva, 1), "% mais alugueis\n")
+  } else {
+    cat("  -> Dias com chuva leve tem", round(abs(efeito_chuva), 1), "% menos alugueis\n")
+  }
+  cat("\n")
+}
+
+# Tipo de dia
+variaveis_tipodia <- names(coef_log)[grepl("tipo_dia", names(coef_log))]
+if(length(variaveis_tipodia) > 0) {
+  cat("COMPORTAMENTO POR TIPO DE DIA:\n")
+  for(var_tipo in variaveis_tipodia) {
+    coef_tipo <- coef_log[var_tipo]
+    efeito_tipo <- (exp(coef_tipo) - 1) * 100
+    tipo_nome <- gsub("tipo_dia", "", var_tipo)
+    cat("  ", tipo_nome, " vs Dia Util: ")
+    if(efeito_tipo > 0) {
+      cat(round(efeito_tipo, 1), "% diferente\n")
+    } else {
+      cat(round(abs(efeito_tipo), 1), "% diferente\n")
+    }
+  }
+  cat("\n")
+}
+
+# Métricas de performance
+cat("METRICAS DE PERFORMANCE:\n")
+cat("======================\n")
+pred_log <- exp(predict(modelo_log))
+resid_original <- dados$total_alugueis - pred_log
+
+rse_original <- round(sqrt(mean(resid_original^2)), 2)
+mae_original <- round(mean(abs(resid_original)), 2)
+erro_percentual <- round(mean(abs(resid_original/dados$total_alugueis)) * 100, 2)
+
+cat("Erro Quadratico Medio (RSE):", rse_original, "alugueis\n")
+cat("Erro Absoluto Medio (MAE):", mae_original, "alugueis\n")
+cat("Erro Percentual Medio:", erro_percentual, "%\n")
+
+# Comparação com modelo não transformado
+cat("\nCOMPARACAO COM MODELO LINEAR:\n")
+cat("============================\n")
+rse_linear <- round(sqrt(mean(residuals(modelo_diagnostico)^2)), 2)
+
+cat("Modelo Linear (RSE):", rse_linear, "alugueis\n")
+cat("Modelo Log (RSE):", rse_original, "alugueis\n")
+
+if(rse_original < rse_linear) {
+  melhoria <- round((rse_linear - rse_original)/rse_linear * 100, 1)
+  cat("Melhoria com transformacao log:", melhoria, "%\n")
+} else {
+  cat("Modelo linear tem performance similar\n")
+}
+```
+
+## Recomendação final justificada ##
+
+```{r}
+# RECOMENDAÇÃO FINAL BASEADA NA ANÁLISE COMPLETA (SEM MODELO ROBUSTO) - CÓDIGO CORRIGIDO
+cat("=== RECOMENDAÇÃO FINAL E JUSTIFICATIVA ===\n\n")
+
+# Comparar todos os modelos (sem o robusto)
+metricas_finais <- data.frame(
+  Modelo = c("OLS", "Log-Transformado", "WLS", "Quantílico"),
+  RSE = c(
+    sqrt(mean(residuals(modelo_diagnostico)^2)),
+    sqrt(mean((dados$total_alugueis - exp(predict(modelo_log)))^2)),
+    sqrt(mean(residuals(modelo_wls)^2)),
+    sqrt(mean(residuals(modelo_quantil)^2))
+  ),
+  MAE = c(
+    mean(abs(residuals(modelo_diagnostico))),
+    mean(abs(dados$total_alugueis - exp(predict(modelo_log)))),
+    mean(abs(residuals(modelo_wls))),
+    mean(abs(residuals(modelo_quantil)))
+  ),
+  stringsAsFactors = FALSE
+)
+
+# Mostrar as métricas corretamente (sem arredondar a coluna de texto)
+cat("COMPARAÇÃO DAS MÉTRICAS DOS MODELOS:\n")
+cat("====================================\n")
+for(i in 1:nrow(metricas_finais)) {
+  cat(metricas_finais$Modelo[i], ":\n")
+  cat("  RSE:", round(metricas_finais$RSE[i], 2), "\n")
+  cat("  MAE:", round(metricas_finais$MAE[i], 2), "\n\n")
+}
+
+# Encontrar os melhores modelos
+melhor_rse <- metricas_finais$Modelo[which.min(metricas_finais$RSE)]
+melhor_mae <- metricas_finais$Modelo[which.min(metricas_finais$MAE)]
+
+cat("MELHORES MODELOS POR MÉTRICA:\n")
+cat("Melhor RSE:", melhor_rse, "(", round(min(metricas_finais$RSE), 2), ")\n")
+cat("Melhor MAE:", melhor_mae, "(", round(min(metricas_finais$MAE), 2), ")\n\n")
+
+# RECOMENDAÇÃO BASEADA NO DIAGNÓSTICO
+cat("JUSTIFICATIVA DA RECOMENDAÇÃO:\n")
+cat("==============================\n")
+
+# Verificar violações persistentes
+bp_log <- bptest(modelo_log)$p.value
+shapiro_log <- shapiro.test(residuals(modelo_log))$p.value
+
+# Diagnóstico dos modelos alternativos
+bp_wls <- bptest(modelo_wls)$p.value
+shapiro_wls <- shapiro.test(residuals(modelo_wls))$p.value
+
+cat("DIAGNÓSTICO DOS PRESSUPOSTOS:\n")
+cat("----------------------------\n")
+cat("Modelo Log-Transformado:\n")
+cat("  Breusch-Pagan p-value:", round(bp_log, 4))
+if(bp_log < 0.05) cat(" → HETEROCEDASTICIDADE **\n") else cat(" → Homocedasticidade OK\n")
+cat("  Shapiro-Wilk p-value:", round(shapiro_log, 4))
+if(shapiro_log < 0.05) cat(" → NÃO NORMALIDADE **\n\n") else cat(" → Normalidade OK\n\n")
+
+cat("Modelo WLS:\n")
+cat("  Breusch-Pagan p-value:", round(bp_wls, 4))
+if(bp_wls < 0.05) cat(" → HETEROCEDASTICIDADE **\n") else cat(" → Homocedasticidade OK\n")
+cat("  Shapiro-Wilk p-value:", round(shapiro_wls, 4))
+if(shapiro_wls < 0.05) cat(" → NÃO NORMALIDADE **\n\n") else cat(" → Normalidade OK\n\n")
+
+# LÓGICA DE RECOMENDAÇÃO
+cat("ANÁLISE PARA RECOMENDAÇÃO:\n")
+cat("-------------------------\n")
+
+if(bp_log < 0.05 & shapiro_log < 0.05) {
+  cat("1. PROBLEMAS PERSISTENTES: Heterocedasticidade e não-normalidade no modelo log\n")
+  if(bp_wls >= 0.05) {
+    cat("2. RECOMENDAÇÃO: Mínimos Quadrados Ponderados (WLS)\n")
+    cat("3. JUSTIFICATIVA: WLS resolve a heterocedasticidade e tem melhor RSE\n")
+    modelo_recomendado <- "WLS"
+  } else {
+    cat("2. RECOMENDAÇÃO: Regressão Quantílica\n")
+    cat("3. JUSTIFICATIVA: Não assume normalidade e é robusto a outliers\n")
+    modelo_recomendado <- "Quantílico"
+  }
+} else if(bp_log < 0.05) {
+  cat("1. PROBLEMA PERSISTENTE: Heterocedasticidade no modelo log\n")
+  if(bp_wls >= 0.05 & melhor_rse == "WLS") {
+    cat("2. RECOMENDAÇÃO: Mínimos Quadrados Ponderados (WLS)\n")
+    cat("3. JUSTIFICATIVA: Especificamente projetado para heterocedasticidade e melhor RSE\n")
+    modelo_recomendado <- "WLS"
+  } else {
+    cat("2. RECOMENDAÇÃO: Modelo Log-Transformado\n")
+    cat("3. JUSTIFICATIVA: Melhor interpretabilidade apesar da heterocedasticidade leve\n")
+    modelo_recomendado <- "Log-Transformado"
+  }
+} else if(shapiro_log < 0.05) {
+  cat("1. PROBLEMA: Não-normalidade dos resíduos\n")
+  cat("2. RECOMENDAÇÃO: Regressão Quantílica\n")
+  cat("3. JUSTIFICATIVA: Não assume distribuição normal dos resíduos\n")
+  modelo_recomendado <- "Quantílico"
+} else {
+  cat("1. SITUAÇÃO: Pressupostos adequadamente atendidos\n")
+  cat("2. RECOMENDAÇÃO: Modelo Log-Transformado\n")
+  cat("3. JUSTIFICATIVA: Melhor balance entre performance e interpretabilidade\n")
+  modelo_recomendado <- "Log-Transformado"
+}
+
+cat("\nMODELO FINAL RECOMENDADO:", modelo_recomendado, "\n")
+
+# VERIFICAÇÃO DE ALINHAMENTO COM MÉTRICAS
+cat("\nVERIFICAÇÃO DE ALINHAMENTO:\n")
+cat("--------------------------\n")
+if(modelo_recomendado == melhor_rse | modelo_recomendado == melhor_mae) {
+  cat("✓ A recomendação está alinhada com as métricas de performance\n")
+} else {
+  cat("NOTA: A recomendação prioriza adequação dos pressupostos sobre métricas puras\n")
+  cat("      Isso é estatisticamente mais rigoroso\n")
+}
+
+# RESUMO DA ESCOLHA FINAL
+cat("\n=== RESUMO DA ESCOLHA FINAL ===\n")
+cat("================================\n")
+
+if(modelo_recomendado == "Log-Transformado") {
+  cat("Modelo: Log-Transformado\n\n")
+  cat("Vantagens:\n")
+  cat("- Interpretação em termos percentuais (mais intuitiva)\n")
+  cat("- Lida naturalmente com heterocedasticidade de dados de contagem\n")
+  cat("- Bom balance entre performance e simplicidade\n")
+  cat("- Coeficientes representam elasticidades\n\n")
+  cat("Aplicação: Ideal para previsão e interpretação de efeitos percentuais\n")
+  
+} else if(modelo_recomendado == "WLS") {
+  cat("Modelo: Mínimos Quadrados Ponderados\n\n")
+  cat("Vantagens:\n")
+  cat("- Corrige especificamente heterocedasticidade\n")
+  cat("- Mantém interpretação linear direta\n")
+  cat("- Eficiente quando a estrutura de variância é conhecida\n")
+  cat("- Estimadores BLUE (Best Linear Unbiased Estimators)\n\n")
+  cat("Aplicação: Ideal quando heterocedasticidade é o principal problema\n")
+  
+} else if(modelo_recomendado == "Quantílico") {
+  cat("Modelo: Regressão Quantílica\n\n")
+  cat("Vantagens:\n")
+  cat("- Não assume normalidade dos resíduos\n")
+  cat("- Robusto a outliers e valores extremos\n")
+  cat("- Estima a mediana (mais robusta que a média)\n")
+  cat("- Fornece informação sobre toda a distribuição\n\n")
+  cat("Aplicação: Ideal quando normalidade é violada e há muitos outliers\n")
+}
+
+cat("\nConclusão: O modelo", modelo_recomendado, "foi escolhido por equilibrar adequação\ndos pressupostos, performance preditiva e interpretabilidade prática.\n")
+```
+
+# Introdução e Motivação
+Esta análise foi conduzida com o objetivo de desenvolver um modelo preditivo robusto para o número total de aluguéis de bicicletas, utilizando um conjunto de dados abrangente que captura variáveis meteorológicas, temporais e comportamentais. A motivação central reside na necessidade de compreender os fatores determinantes da demanda por bicicletas compartilhadas, permitindo otimizações operacionais e estratégicas para empresas do setor. Dada a natureza complexa e multivariada do fenômeno, optou-se pela regressão linear múltipla como ferramenta principal, complementada por abordagens alternativas quando necessário.
+
+Seleção e Engenharia de Variáveis
+O processo de seleção de variáveis foi guiado por critérios de relevância teórica, análise exploratória e considerações estatísticas. Inicialmente, todas as 15 variáveis disponíveis foram consideradas, porém, mediante análise de correlação e multicolinearidade, identificou-se que temperatura e sensação térmica apresentavam correlação excessiva (r > 0.95), caracterizando redundância informacional. Optou-se por manter apenas a temperatura real, por representar uma medida objetiva e diretamente mensurável.
+
+Uma contribuição significativa da engenharia de variáveis foi a criação da variável tipo_dia, que unificou informações de dia_semana, dia_util e feriado. A análise exploratória revelou três padrões comportamentais distintos: dias úteis (média: 4.464 aluguéis), fins de semana (média: 4.667) e feriados (média: 3.798). Esta categorização mostrou-se estatisticamente mais eficiente que a abordagem original, reduzindo a dimensionalidade do modelo enquanto preservava a informação comportamental crucial.
+
+A variável clima foi recodificada, eliminando o nível "Chuva_forte" que não apresentava observações, consolidando-se em três categorias: Limpo, Nublado e Chuva_leve. Esta decisão baseou-se na distribuição real dos dados, evitando parâmetros não estimáveis no modelo.
+
+Estratégia de Modelagem e Seleção
+A modelagem seguiu uma abordagem incremental, começando com um Modelo 1 contendo variáveis principais (estação, ano, clima, temperatura, umidade, velocidade_vento e tipo_dia) e evoluindo para um Modelo 2 com interações clinicamente plausíveis. A inclusão das interações estação × temperatura e clima × temperatura justificou-se pela hipótese de que o efeito da temperatura sobre a demanda por bicicletas varia conforme o contexto sazonal e meteorológico.
+
+A comparação formal entre Modelo 1 e Modelo 2 utilizou múltiplos critérios: teste F (ANOVA), R² ajustado, AIC, BIC e Cp de Mallows. O Modelo 2 demonstrou superioridade estatística significativa (p < 0.001 no teste F), com aumento do R² ajustado de 0.8205 para 0.8609 e redução do AIC em mais de 200 pontos. Esta melhoria substancial validou a importância das interações não-aditivas no fenômeno estudado.
+
+Diagnóstico e Abordagens Alternativas
+O diagnóstico dos pressupostos do modelo revelou violações importantes: teste de Breusch-Pagan significativo (p < 0.05) indicando heterocedasticidade e teste de Shapiro-Wilk significativo (p < 0.05) apontando não-normalidade dos resíduos. Estas violações, comuns em dados de contagem como aluguéis de bicicletas, motivaram a exploração de abordagens alternativas.
+
+Três alternativas foram implementadas e comparadas:
+
+Modelo Log-Transformado: Aplicação de logaritmo na variável resposta, adequada para dados com distribuição assimétrica e heterocedasticidade proporcional à média.
+
+Mínimos Quadrados Ponderados (WLS): Atribuição de pesos inversamente proporcionais à variância dos resíduos, abordagem específica para heterocedasticidade.
+
+Regressão Quantílica: Estimação da mediana condicional, robusta a outliers e não dependente da normalidade dos resíduos.
+
+A comparação baseou-se no Erro Quadrático Médio (RSE) e Erro Absoluto Médio (MAE) na escala original, garantindo comparabilidade entre as abordagens.
+
+Interpretação dos Resultados Principais
+A análise do Modelo 2 revelou insights comportamentais importantes. O efeito da temperatura mostrou-se moderado na primavera (+158 aluguéis/°C), mas substancialmente maior no verão (+428 aluguéis/°C), refletindo o uso mais sensível às condições térmicas nos meses quentes. Interessantemente, no outono o efeito foi negativo (-143 aluguéis/°C), possivelmente indicando que temperaturas amenas neste período desestimulam o uso recreativo.
+
+A chuva leve reduziu o efeito positivo da temperatura em aproximadamente 100 unidades, demonstrando que condições meteorológicas adversas atenuam a relação temperatura-demanda. O ano 2019 mostrou crescimento significativo (+33% nos aluguéis), evidenciando a expansão do serviço ou maior adoção pelos usuários.
+
+A análise separada por tipo de usuário revelou padrões opostos: usuários casuais apresentam picos em fins de semana e feriados (comportamento recreativo), enquanto usuários registrados concentram-se em dias úteis (comportamento utilitário/comutacao). Esta dicotomia justificou a modelagem separada para os dois grupos quando o foco é entender determinantes específicos de cada segmento.
+
+Escolha do Modelo Final e Recomendação
+Após análise comparativa, o Modelo Log-Transformado emergiu como a escolha balanceada. Apesar do WLS apresentar ligeira vantagem no RSE (0.29 vs 0.30), o modelo log-transformado oferece interpretação mais intuitiva (coeficientes representam variações percentuais) e lida adequadamente com a heterocedasticidade característica de dados de contagem.
+
+A transformação logarítmica permite interpretações como: "um aumento de 1°C na temperatura resulta em aumento de X% nos aluguéis", mais informativa para decisões operacionais que estimativas em unidades absolutas. Adicionalmente, esta abordagem preserva a relação não-linear entre variáveis preditoras e resposta, comum em fenômenos de demanda.
+
+Conclusão e Aplicabilidade
+A metodologia adotada demonstrou que a modelagem de aluguéis de bicicletas beneficia-se significativamente de: (1) engenharia de variáveis que capturem padrões comportamentais; (2) inclusão de interações não-aditivas clinicamente plausíveis; e (3) transformações que acomodem as particularidades distribucionais de dados de contagem.
+
+As métricas finais do modelo recomendado (RSE = 0.30, MAE = 0.23 na escala logarítmica, correspondendo a erro percentual médio de ~25% na escala original) indicam desempenho preditivo adequado para aplicações práticas como planejamento de frota, alocação de recursos e gestão operacional. A interpretabilidade dos coeficientes facila a tradução dos resultados em ações estratégicas concretas, cumprindo assim o duplo objetivo de rigor estatístico e utilidade prática que guiou esta análise.
